@@ -4,6 +4,7 @@
 {"step": 4, "ts": 1760600002.5, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "tool_result", "tool": "dataflow", "ok": true, "via": "mcp"}
 {"step": 5, "ts": 1760600003.0, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "tool_request", "tool": "read_file", "args": {"path": "expectedresults-0.1.csv"}, "via": "mcp"}
 {"step": 6, "ts": 1760600003.2, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "tool_result", "tool": "read_file", "ok": false, "error": "refused: expectedresults-0.1.csv is withheld", "via": "mcp", "refused_by": "server"}
-{"step": 7, "ts": 1760600004.0, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "routing", "decision": "skip_remediation", "by": "runtime"}
-{"step": 8, "ts": 1760600005.0, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "state_change", "node": "remediation", "alert_status": "classified", "label": 0, "checks": {"applies": null, "touches_flagged_line": null, "clean_rescan": null}}
-{"step": 9, "ts": 1760600006.0, "run_id": "r1", "alert_id": null, "kind": "terminal", "status": "completed", "usage_total": {"input": 1200, "output": 80}}
+{"step": 7, "ts": 1760600003.6, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "state_change", "node": "submit", "alert_status": "classified", "label": 0}
+{"step": 8, "ts": 1760600004.0, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "routing", "decision": "skip_remediation", "by": "runtime"}
+{"step": 9, "ts": 1760600005.0, "run_id": "r1", "alert_id": "owasp-BenchmarkTest00011-py-47-B608", "kind": "state_change", "node": "remediation", "checks": {"applies": null, "touches_flagged_line": null, "clean_rescan": null}}
+{"step": 10, "ts": 1760600006.0, "run_id": "r1", "alert_id": null, "kind": "terminal", "status": "completed", "usage_total": {"input": 1200, "output": 80}}
