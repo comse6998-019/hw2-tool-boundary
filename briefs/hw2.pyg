@@ -1,0 +1,8 @@
+openshell sandbox create --name hw2local --from hw2-feasibility:1 --policy policy.local.yaml \
+    --no-auto-providers --detach -- sleep infinity
+openshell sandbox exec -n hw2local --no-login-shell --no-tty \
+    --env LOCAL_MODEL_URL=http://host.lima.internal:8080 -- sh -c '
+  mkdir -p /sandbox/work/target &&
+  cp -R /target/testcode /target/helpers /target/app.py /sandbox/work/target/ &&
+  cd /app/agent &&
+  your-agent --input /sandbox/work/target --output /sandbox/work/run4 --config /sandbox/work/low.toml'

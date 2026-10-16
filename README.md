@@ -8,6 +8,23 @@ measure how they behave under a planted injection. The assignment is in
 There is no starter code. You design and write every part of both agents and the
 server.
 
+## Building the brief
+
+With Tectonic and Pygments (`pygmentize`) on `PATH`, run:
+
+```bash
+cd briefs
+tectonic -X compile -Z shell-escape -Z shell-escape-cwd=. hw2.tex
+```
+
+For LaTeX Workshop, configure a Tectonic recipe in `.vscode/settings.json` at
+the root of the folder opened in VS Code. Settings in `briefs/.vscode/` apply
+only when `briefs/` itself is the opened workspace, not when the repository
+root is open. Enable shell escape for `minted`, set its working directory to
+`%DIR%`, and ensure the recipe's `PATH` selects a working `pygmentize`.
+
+## Repository contents
+
 | File | What it is |
 |---|---|
 | `briefs/hw2.pdf` | The assignment brief |

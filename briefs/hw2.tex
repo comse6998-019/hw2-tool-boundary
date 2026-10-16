@@ -3,6 +3,7 @@
 % minted needs pygmentize on PATH (e.g. uv tool install pygments).
 \documentclass[9pt,letterpaper]{article}
 \usepackage[extreme]{savetrees}
+\usepackage[skip=\baselineskip,indent=0pt]{parskip}
 \usepackage{booktabs,tabularx,array,enumitem,xcolor}
 \usepackage[cache=false]{minted}
 \usepackage[breakable]{tcolorbox}
@@ -30,7 +31,7 @@
 \renewcommand\topfraction{0.9}
 \renewcommand\textfraction{0.07}
 \renewcommand\floatpagefraction{0.85}
-\title{HW2: Two Agents over CLDK, One Local and One on MCP}
+\title{HW2: Building and Comparing Code-Action and MCP Agents}
 \author{COMS E6998 Section 019, Fall 2026 · Design of Production Agentic Systems\\
   Instructor: Rahul Krishna · TA: In Keun Kim}
 \date{Released Friday, October 16, 2026 · Due Friday, November 13, 2026, before 11:59 p.m.}
@@ -47,43 +48,56 @@
 
 \section{Overview}\label{sec:overview}
 
-Your HW1 agent read files and labelled alerts. In HW2 you build two agents from
-it and compare them. The first is a local code-action agent: the model's action
-is a Python script, run by your harness against the CLDK analysis API and the
-workspace, the pattern of lecture 4. The second is an MCP agent: every tool it
-uses is served over MCP by a server you write, with the same analysis behind it.
-Both classify alerts with program analysis, asking whether the request value
-reaches the SQL string instead of guessing from text, and both patch the alerts
-they label real, checked by a fresh Bandit scan. More capable tools need
-guardrails. You state three rules (what the agent may read, what it may write,
-what it may connect to) and enforce each at the places that can hold it: the
-prompt, your server, and the operating-system kernel through an OpenShell
-sandbox. The code-action agent shows what happens when the server is not there.
-We test the guardrails from outside your code, by driving your server and your
-sandbox directly, and you measure how your agents behave under a planted
-injection.
+\begin{itemize}
+\item \textbf{Build and compare two agents.} Extend your HW1 agent into:
+  \begin{itemize}
+  \item A \textbf{code-action agent} uses model-generated Python scripts to call
+  the CLDK analysis API and read or edit files in a workspace.
+  \item An \textbf{MCP agent} accesses the same analysis and file operations through
+  a Model Context Protocol (MCP) server that you implement.
+  \end{itemize}
 
-As in HW1, the handout fixes the interfaces that make your submission testable:
-the command line and the configuration (Section~\ref{sec:interface}); the server's
-core tools, because a staff driver calls them (Section~\ref{sec:server});
-\code{mcp.json} and \code{policy.yaml}, which say how your server starts and which
-OpenShell policy both agents run under (Sections~\ref{sec:guardrails}
-and~\ref{sec:interface}); the output file and the trace (Sections~\ref{sec:output}
-and~\ref{sec:trace}); and the README (Section~\ref{sec:readme}). You design and build
-everything behind them. Grades assess the implementation of
-the required mechanisms and the evidence for them, one point per rubric item, not
-classification correctness. Classification results are collected for teaching
-purposes only. In class, the course's Cyberbird agent runs inside OpenShell as the
-demonstration of a sandboxed agent. The handout gives no starter code, stubs or
-tests. You may consult the instructors as often as you
-like, at any stage of the work.
+\item \textbf{Classify and patch alerts.}
+  \begin{itemize}
+  \item Both agents use program analysis to classify Bandit alerts. For SQL
+    alerts, they examine whether a request value reaches the query string.
+  \item Both agents patch alerts they classify as real vulnerabilities and
+    check the patches with a fresh Bandit scan.
+  \end{itemize}
+
+\item \textbf{Define and test restrictions.}
+  \begin{itemize}
+  \item Define rules for what each agent may read, write, and access over the
+    network. State these rules in the prompt and enforce them through your MCP
+    server and the operating-system kernel, using an OpenShell sandbox.
+  \item Compare the agents to show which restrictions depend on the server.
+  \item Measure how both agents respond to a planted prompt injection. During
+    grading, staff will test the server and sandbox directly.
+  \end{itemize}
+
+\item \textbf{Implement the required interfaces.}
+  \begin{itemize}
+  \item This handout specifies the command line and configuration
+    (Section~\ref{sec:interface}), server contracts (Section~\ref{sec:server}),
+    sandbox policy (Section~\ref{sec:guardrails}), output and trace formats
+    (Sections~\ref{sec:output} and~\ref{sec:trace}), and README
+    (Section~\ref{sec:readme}) required for grading.
+  \item You design and implement the system behind these interfaces.
+  \end{itemize}
+
+\end{itemize}
+
+
+Week 7 will demonstrate the course's Cyberbird agent, running inside OpenShell, in the classroom.
+
+You may consult the instructors at any stage of the work and we'll be happy to assist you.
 
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lX@{}}
 \toprule
 Released & Friday, October 16, 2026 \\
-Due & Friday, November 13, 2026, before 11:59 p.m. \\
-Weight & 20\% of the course grade, marked out of 18 (Section~\ref{sec:rubric}) \\
+Due & Friday, November 20, 2026, before 11:59 p.m. \\
+Weight & 20\% of the course grade, marked out of 19 (Section~\ref{sec:rubric}) \\
 Format & Solo or team; one submission per student or team. \\
 Late days & 6 per student per semester, at most 3 on one assignment; each extends the deadline by 24 hours. \\
 \bottomrule
@@ -94,65 +108,95 @@ Late days & 6 per student per semester, at most 3 on one assignment; each extend
 
 \subsection{Two agents}\label{sec:agents}
 
-Both agents start from your HW1 code: its loop, dispatcher, budget, tracer and
+Build both agents from your HW1 loop, dispatcher, budget controls, tracer, and
 workspace.
 
-\textbf{The code-action agent.} The HW1 loop with its tools replaced by one,
-\code{run_python(script)}. The harness runs the script the way lecture 4's kernel
-did (slide 137): \code{exec} in a namespace that holds the CLDK analysis object for
-the target and the path of the workspace copy, and the observation is what the
-script prints or raises. The model reads, analyses and edits with ordinary Python:
-it calls \code{locate}, \code{callers_of}, \code{get_ddg}, opens files, writes
-files. There is no dispatcher check to pass, because the harness sees one script,
-not individual calls (slide 154); the kernel is the only place that can confine it.
-It runs inside the OpenShell sandbox. Figure~\ref{fig:kernel} is lecture 4's kernel,
-which your harness extends.
+\textbf{The code-action agent (CodeAct).} Extend the HW1 loop so the model can
+write and execute code that uses CLDK and the workspace. During development,
+complete the following steps:
+\begin{enumerate}
+\item Clone the CLDK Python SDK repository:
+  \par\noindent\url{https://github.com/codellm-devkit/python-sdk}\par
+  \code{git clone https://github.com/codellm-devkit/python-sdk.git}
+\item Use Claude Code or Codex to read the cloned SDK and write a prompt file
+  for your CodeAct agent. Review the resulting file. Submit both this file and
+  the exact prompt you gave Claude Code or Codex to create it. Submitting that
+  generation prompt earns one point (rubric item C5).
+\item Make the resulting agent prompt instruct your agent to instantiate CLDK
+  on the workspace copy, choose suitable analysis methods, and compose tools in
+  Python code. You may execute this code through shell heredocs or a Python
+  execution kernel that you write.
+\item Configure your harness to load this prompt file and execute the agent's
+  generated scripts inside OpenShell. Return the execution output and errors to
+  the model.
+\end{enumerate}
 
-\begin{figure}[tbp]
-\begin{minted}{python}
-import io, re, traceback
-from contextlib import redirect_stdout
+A heredoc supplies a multiline script to a command, as illustrated in
+Figure~\ref{fig:kernel}. Alternatively, you may write a Python execution kernel,
+as in lecture 4, slide 137. For example, the kernel can use \code{exec} in a
+persistent namespace so that the agent's code can create and reuse a CLDK analysis
+object across actions. This execution kernel is part of your harness and must run
+inside OpenShell. Both approaches are acceptable.
 
-namespace = {}
+Clone the SDK and prepare the prompt before the sandbox run. Runtime network
+access remains limited to the model provider. Use the CLDK version specified in
+Section~\ref{sec:server}.
 
-def extract(reply: str) -> str | None:
-    m = re.search(r"```python\n(.*?)```", reply, re.S)
-    return m.group(1) if m else None
+The agent must initialize CLDK through its generated code. It can combine CLDK
+queries, Python functions, and other permitted tools in a script; it is not
+limited to the examples in this handout. The dispatcher sees an execution request
+as one action and cannot validate every operation within the script
+(lecture 4, slide 154). The operating-system kernel enforces the sandbox's fixed
+access restrictions.
 
-def run(script: str) -> str:
-    out = io.StringIO()
-    try:
-        with redirect_stdout(out):
-            exec(script, namespace)
-    except Exception:
-        out.write(traceback.format_exc())
-    return out.getvalue()
+\begin{figure}[htbp]
+\begin{minted}{bash}
+python - <<'PY'
+from cldk import CLDK
+
+analysis = CLDK.python(
+    project_path="/sandbox/work/target",
+    analysis_level="program_dependency_graph",
+)
+print(analysis.get_entrypoint_coverage())
+print(analysis.get_entrypoints())
+PY
 \end{minted}
-\caption{\file{kernel.py}, the code-action kernel of lecture 4, slide 137.}\label{fig:kernel}
+\caption{Example CodeAct action: a shell heredoc passes a Python script to the
+interpreter. The script initializes CLDK and combines two analysis queries.
+The queries are examples; students choose the operations their agents need.}\label{fig:kernel}
 \end{figure}
 
-\textbf{The MCP agent.} The HW1 loop as an MCP host. It discovers the server's
-tools with \code{tools/list}, records the discovery in the trace, offers the model
-the server's list minus the host-only tools, and sends every call through the HW1
-dispatcher and then the MCP client. It runs inside the same sandbox, with the
-server.
+\textbf{The MCP agent.} Adapt the HW1 loop to act as an MCP host. The host
+discovers the server's tools with \code{tools/list} and records that discovery in
+the trace. It offers the discovered tools to the model, excluding host-only
+tools. Every tool call passes through the HW1 dispatcher and then the MCP client.
+Run the agent and server together inside the same OpenShell sandbox.
 
-Both agents run the same stages, write the same \code{report.json} and
-\code{trace.jsonl}, and are selected by the config: \code{[agent] kind = "codeact"}
-or \code{"mcp"}. Section~\ref{sec:targets} says which targets each one runs on.
+Both agents follow the stages in Section~\ref{sec:stages} and produce
+\code{report.json} and \code{trace.jsonl} in the same formats. Select the agent
+in the configuration with \code{[agent] kind = "codeact"} or \code{"mcp"}.
+Section~\ref{sec:targets} specifies the targets for each agent.
 
 \subsection{The MCP server}\label{sec:server}
 
-One stdio server on the MCP SDK's \code{MCPServer} (staff used \code{mcp} 2.3.0), started from
-\code{mcp.json}. Its tools are analysis, text and write tools, plus one host-only
-tool. The core tools keep the names and argument names below, because the staff
-driver calls them.
+Implement one stdio server using the MCP SDK's \code{MCPServer}. Staff used
+\code{mcp} 2.3.0. Configure the server's startup command in \code{mcp.json}.
+You choose the tools your server exposes. The table below gives optional examples
+of analysis, text, and write tools. You may use, replace, combine, or omit these
+examples and add any other tools your agent needs. Their names and arguments are
+suggestions. Your tools must support the assignment's analysis and remediation
+stages and follow the contract and access rules in this handout.
+
+Document your tool names, arguments, results, and purposes in the README so staff
+can test your implementation. The host-only alert selector described after the
+table is a separate control interface.
 
 \begin{center}
 \small
 \begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}p{0.16\linewidth}X>{\raggedright\arraybackslash}p{0.215\linewidth}@{}}
 \toprule
-Tool & Arguments & Returns & Behind it \\
+Example tool & Arguments & Result or effect & Implementation \\
 \midrule
 \multicolumn{4}{@{}l}{\textit{Analysis tools over CLDK 2.0}} \\
 \code{locate} & \code{path}, \code{line} & the enclosing callable's signature, or module scope & \code{locate} \\
@@ -162,75 +206,85 @@ Tool & Arguments & Returns & Behind it \\
 \code{dataflow} & \code{path}, \code{line} & the data-dependence edges of the enclosing callable, each as from-line, to-line, variable & \code{get_ddg} \\
 \code{entry_points} & none & route handlers with file and line, and the coverage report & \code{get_entrypoints}, \code{get_entrypoint_coverage} \\
 \midrule
-\multicolumn{4}{@{}l}{\textit{Text tools, HW1's}} \\
+\multicolumn{4}{@{}l}{\textit{Text tools from HW1}} \\
 \code{read_file} & \code{path}, optional line range & numbered lines of one file of the workspace copy & HW1's read tool \\
 \code{search} & \code{pattern}, optional \code{path} & matching lines with file and line & HW1's search tool \\
 \midrule
 \multicolumn{4}{@{}l}{\textit{Write tools}} \\
 \code{edit} & \code{path}, \code{old}, \code{new} & replaces one exact occurrence of \code{old} with \code{new} in the workspace copy & the workspace \\
 \code{rescan} & \code{path} & the alerts of Bandit 1.9.4 on that one file of the workspace & Bandit \\
-\midrule
-\multicolumn{4}{@{}l}{\textit{Host-only, never offered to the model}} \\
-\code{set_alert} & \code{alert_id} & names the open alert for the per-alert checks (Section~\ref{sec:guardrails}) & the server's own state \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-\textbf{Analysis tools.} A fixed core set, with names, arguments and results set
-by the brief so the staff driver can call them. Behind each is a CLDK call, named
-so you know what to wrap. \code{dataflow} is the one that answers the SQL
-question: the agent looks for a path from the line where the request value enters
-to the line of the query string. You may add more tools (a line-to-line
-\code{reaches} on the same edges, slices, imports) under the same contract rule.
-CLDK 2.0.0 (\code{cldk==2.0.0}) needs \code{SYSTEM_PYTHON} set to a Python 3.12
-interpreter; the lecture's notebook attaches with
-\code{CLDK.python(project_path=...,} \code{analysis_level="program_dependency_graph")}. On
-OWASP the first attach analysed 3,710 callables at that level in about 150 seconds,
-inside the sandbox and outside it, and later queries answer in well under a second.
-Before trusting an empty entry-point list, read \code{get_entrypoint_coverage}; for
-a local variable use \code{get_ddg}, because the value-name predicates resolve
-parameters, globals and captures, not locals.
+\textbf{Analysis tools.} Choose CLDK methods that help your agent classify alerts.
+For example, a \code{dataflow} tool can help the agent look for a path from the
+line where a request value enters to the line that constructs a SQL query string.
+Other options include line-to-line reachability queries, slices, and import
+queries. Every tool you expose must follow the contract requirements below.
 
-\textbf{Text tools.} \code{read_file} and \code{search}, HW1's. The analysis tools
-answer questions about structure; the text tools answer questions about text, and
-the write stage needs the exact lines it will edit. On OWASP the model will rarely
-need them, and the report counts how often it did.
+Use CLDK 2.0.0 (\code{cldk==2.0.0}) and set \code{SYSTEM_PYTHON} to a Python 3.12
+interpreter. The lecture notebook initializes the analysis with
+\code{CLDK.python(project_path=...,} \code{analysis_level="program_dependency_graph")}.
+In staff runs on OWASP, initial analysis at this level covered 3,710 callables and
+took about 150 seconds, both inside and outside the sandbox. Subsequent queries
+took well under a second.
 
-\textbf{Write tools.} \code{edit(path, old, new)} as cyberbird's reactive agent
-has it, and \code{rescan(path)}, which runs Bandit 1.9.4 on one file of the
-workspace and returns the alerts. A patch is accepted by three mechanical checks,
-the ones lecture 2's patching demo used:
+Before interpreting an empty entry-point list, check
+\code{get_entrypoint_coverage}. For local variables, use \code{get_ddg}: the
+value-name predicates resolve parameters, globals, and captures, but not locals.
+
+\textbf{Text tools.} HW1's \code{read_file} and \code{search} are options for
+retrieving source text, including the exact lines needed for an edit. You may
+provide this functionality through other tools. Report how often your agent uses
+text tools alongside program analysis.
+
+\textbf{Write tools.} Choose how your agent edits workspace files and requests a
+fresh Bandit 1.9.4 scan. For example, Cyberbird's \code{edit(path, old, new)}
+replaces text, and \code{rescan(path)} scans one file and returns its alerts.
+These tool names are optional. Regardless of the interface, accept a patch only
+if it passes all three checks from lecture 2's patching demonstration:
 \begin{enumerate}
 \item \code{applies}: the unified diff applies cleanly against the pinned commit;
 \item \code{touches_flagged_line}: it touches the flagged line;
 \item \code{clean_rescan}: a fresh rescan no longer reports that rule at that location.
 \end{enumerate}
-A clean rescan is evidence, not proof of a correct fix, and the report says so. In
-the code-action agent the script writes the file itself, and your harness runs the
-same three checks on the result.
+A clean rescan does not prove that a fix is correct. Explain this limitation in
+your design report. For the code-action agent, the script edits the file directly
+and the harness applies the same three checks to the result.
 
-\textbf{Contracts and refusals.} Every tool has an argument schema, a result schema
-and listed refusal cases. The server validates arguments and results. The
-description enforces nothing (lecture 5's ``Only argument and result shapes are
-enforced.''), which the report states. A refusal is an MCP tool error
-(\code{isError} true; in the SDK, raise \code{ToolError}) whose text starts with the
-word \code{refused} and gives the reason, for example
-\code{refused: expectedresults-0.1.csv is withheld}. The staff driver looks for
-exactly that. A withheld path is refused by the check, whether or not the file
-exists in the workspace copy.
+\Needspace{5\baselineskip}
+\textbf{Host-only control.} Implement \code{set_alert(alert_id)} so the host can
+select the current alert for the server's per-alert checks
+(Section~\ref{sec:guardrails}). This control interface is required and must never
+be offered to the model. It does not limit your choice of model-facing tools.
 
-\subsection{The stages}\label{sec:stages}
+\textbf{Contracts and refusals.} Define an argument schema, a result schema, and
+refusal cases for every MCP tool you expose. The server must validate arguments
+and results.
+As lecture 5 states, ``Only argument and result shapes are enforced.'' A tool
+description does not enforce its stated restrictions; explain this distinction
+in your design report.
+
+Return refusals as MCP tool errors with \code{isError} set to true. In the SDK,
+raise \code{ToolError}. The error text must begin with \code{refused} and explain
+the reason, for example \code{refused: expectedresults-0.1.csv is withheld}.
+The staff driver checks this format. Refuse access to a withheld path even if the
+file does not exist in the workspace copy.
+
+\subsection{Execution stages}\label{sec:stages}
 
 Both agents run three stages:
 \begin{enumerate}
-\item \textbf{Discovery:} Bandit over the scan block, as in HW1. (The trace kind
-  \code{discovery} of Section~\ref{sec:trace} records \code{tools/list}, not this stage.)
-\item \textbf{Classification:} label each alert 1 or 0 with evidence, now with the
-  analysis available.
-\item \textbf{Remediation:} propose and apply a patch and run the three checks.
-  Only alerts labelled 1 are patched. The runtime makes that decision from the
-  label, not the model, and the trace shows it as a \code{routing} event with
-  \code{by: runtime}.
+\item \textbf{Discovery:} run Bandit using the configured scan block, as in HW1.
+  The trace event named \code{discovery} records MCP \code{tools/list}, which is
+  separate from this stage (Section~\ref{sec:trace}).
+\item \textbf{Classification:} use the available evidence, including program
+  analysis, to label each alert 1 or 0.
+\item \textbf{Remediation:} for each alert labelled 1, propose and apply a patch,
+  then run the three acceptance checks. The runtime must route alerts to this
+  stage based on their labels. Record that decision as a \code{routing} event
+  with \code{by: runtime}. Skip remediation for all other alerts.
 \end{enumerate}
 
 \section{Targets and the HW1 baseline}\label{sec:targets}
@@ -259,15 +313,15 @@ BenchmarkPython only; the comparison of the two agents is made there. OWASP's
 answer key, \code{expectedresults-0.1.csv}, is open to you and never to your agents,
 as in HW1.
 
-Keep HW1's run-level token charging, pre-call budget check, output allowance, step
-limit, no-progress detector, dispatcher validation, workspace and withholding, one
-row per alert, and explicit unclassified outcomes. Your \code{report.json} must meet
-the HW2 report schema, which is HW1's with one field added
-(Section~\ref{sec:output}). The HW2 trace changes are specified in
-Section~\ref{sec:trace}.
+Retain HW1's controls: run-level token accounting, pre-call budget checks, output
+allowance, step limit, no-progress detection, dispatcher validation, and workspace
+and withholding rules. Continue to report one row per alert, including explicit
+outcomes for alerts that remain unclassified. Use the HW2 report schema, which
+adds one field to the HW1 format (Section~\ref{sec:output}), and the trace
+requirements in Section~\ref{sec:trace}.
 
-The HW2 repository ships Draft 2020-12 JSON Schemas. Use these local files for HW2
-validation.
+Validate your HW2 artifacts against the Draft 2020-12 JSON Schemas supplied in
+this repository:
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lX@{}}
 \toprule
@@ -279,75 +333,81 @@ Each \code{trace.jsonl} event & \code{trace.schema.json} \\
 \bottomrule
 \end{tabularx}
 \end{center}
-Schemas fix required keys and types; the cross-artifact and runtime rules in this
-brief also apply. Extra fields are allowed except where a schema explicitly closes
-an object. The examples in \file{examples/} illustrate the formats, not a working
-agent or measured results.
+The schemas define required keys and types. You must also follow this handout's
+rules for runtime behavior and consistency across artifacts. Extra fields are
+allowed unless a schema explicitly disallows them. The files in \file{examples/}
+illustrate the formats; they do not provide a working agent or measured results.
 
-Record the commit of your submitted HW1 baseline and identify HW2 changes. We do
-not regrade HW1 or award points for copying one reference architecture. A baseline
-defect does not automatically remove unrelated HW2 points; a new HW2 mechanism must
-nevertheless function to earn its own point.
+Record the commit of your submitted HW1 baseline and describe your HW2 changes.
+We do not regrade HW1 or award points for copying a reference architecture. A
+defect in your HW1 baseline does not automatically cost unrelated HW2 points.
+Each required HW2 mechanism must work to earn its point.
 
-\section{The guardrails}\label{sec:guardrails}
+\section{Access rules and enforcement}\label{sec:guardrails}
 
-Three rules, in words.
+Both agents must follow three access rules:
 \begin{itemize}
-\item \textbf{The read rule,} from HW1: the agent may read only the target's code.
-  Never \code{.git}, never the answer key, and on OWASP never a case other than the
-  one open.
-\item \textbf{The write rule,} new: the agent may write only inside its disposable
-  workspace copy, and only to the file of the alert it is fixing. It never runs the
-  target's code; \code{rescan} runs Bandit, not the target.
-\item \textbf{The network rule,} new: the agent's process may talk only to the model
-  provider.
+\item \textbf{Read:} the agent may read only the target's code. It must not read
+  \code{.git} or the answer key. On OWASP, it may read only the case currently
+  being processed. These restrictions carry over from HW1.
+\item \textbf{Write:} the agent may edit only the file associated with the alert
+  it is fixing, and only within its disposable workspace copy. It must never
+  execute the target's code. A rescan runs Bandit on the target.
+\item \textbf{Network:} the agent's process may connect only to the model provider.
 \end{itemize}
 
-Each rule has a fixed part and a per-alert part. ``Never the answer key'', ``only
-inside the workspace'' and ``only the provider'' are fixed before the run. ``Only
-the open case'' and ``only the file of the alert being fixed'' change with every
-alert. The places, and what a bypass needs at each, are lecture 6's ``Each place has
-its own bypass.'' applied to these rules:
+These restrictions fall into two categories. \textbf{Fixed restrictions} apply
+throughout a run: exclude the answer key, limit target writes to the workspace,
+and allow network access only to the model provider. \textbf{Per-alert
+restrictions} depend on the current alert: read only the open OWASP case and edit
+only the file being fixed.
+
+Apply the restrictions at the following layers. For each layer, consider how its
+checks could be bypassed, as discussed in lecture 6: ``Each place has its own
+bypass.''
 \begin{itemize}
-\item \textbf{The prompt} states all three rules, for both agents.
-\item \textbf{The server,} for the MCP agent only: HW1's single path check for
-  reads, the same check for writes with the workspace as the only writable root,
-  and the per-alert parts through a host-only tool \code{set_alert(alert_id)} that
-  the model never sees. A refusal is a \code{tool_result} with \code{ok: false} and
-  \code{refused_by: server}. The server is your own code inside the sandbox, so
-  this is the harness placement: strong against the model, not against code in the
-  same process. The code-action agent has no server, so for it this place is empty.
-\item \textbf{The kernel,} through OpenShell, for both agents: agent and server run
-  inside one sandbox. The filesystem policy grants read access to the target's code
-  directories and never to the target's root, so the key and \code{.git} do not
-  exist for either process; it grants write access to the workspace copy and
-  nothing else of the target; Landlock compatibility is \code{hard_requirement}, so
-  a policy that cannot be enforced fails the start instead of degrading. The
-  network policy grants the agent's Python binary one endpoint, the model provider,
-  with the key carried by an OpenShell provider attachment so it never enters the
-  sandbox; users of a local model server grant the host's port instead. A kernel
-  refusal reaches the server as a permission error on a path that passed its own
-  check, and the server reports \code{refused_by: kernel}; in the code-action agent
-  it reaches the script as an exception, which the harness records.
+\item \textbf{Prompt.} State all three rules in both agents' prompts.
+\item \textbf{MCP server.} Reuse HW1's single path check for reads. Apply the same
+  check to writes, with the workspace as the only writable root. Enforce the
+  per-alert restrictions using \code{set_alert(alert_id)}, a host-only tool that
+  is never offered to the model. Record a server refusal as a \code{tool_result}
+  with \code{ok: false} and \code{refused_by: server}. These checks constrain
+  model requests but cannot constrain arbitrary code in the server's own
+  process. The code-action agent has no server checks.
+\item \textbf{Operating-system kernel.} Run each agent, along with its server if
+  applicable, inside an OpenShell sandbox. Grant read access to the target's code
+  directories, but never to the target root. This keeps the answer key and
+  \code{.git} inaccessible. Grant write access only to the workspace copy of the
+  target. Set Landlock compatibility to \code{hard_requirement} so that startup
+  fails if the policy cannot be enforced.
+
+  Allow the agent's Python binary to reach only the model provider endpoint.
+  Supply the provider key through an OpenShell provider attachment so that the
+  key never enters the sandbox. If you use a local model server, allow its host
+  port instead.
+
+  If the kernel denies a path that passed the server's checks, the server
+  receives a permission error and reports \code{refused_by: kernel}. For the
+  code-action agent, the script receives an exception, which the harness records.
 \end{itemize}
 
-\code{set_alert}'s argument is the alert's id in your report, and the server maps
-it to the alert's file. On OWASP the server must also accept the bare case name,
-\code{{"alert_id": "BenchmarkTest00011"}}, which is what the staff driver sends;
-the open case is then \file{testcode/BenchmarkTest00011.py}.
+The argument to \code{set_alert} is the alert ID from your report. The server maps
+this ID to the alert's file. On OWASP, the server must also accept a bare case
+name, such as \code{{"alert_id": "BenchmarkTest00011"}}. The staff driver uses
+this form to select \file{testcode/BenchmarkTest00011.py} as the open case.
 
-The kernel holds the fixed parts and cannot hold the per-alert parts, because its
-policy is set when the sandbox starts. This is Sandlock's split from the lecture:
-static, input-independent policy in the kernel; input-dependent decisions in a
-narrow supervisor, which here is the server. The code-action agent makes the
-consequence visible: with no server, the per-alert parts of the rules are enforced
-nowhere.
+The sandbox policy is set at startup, so the kernel enforces fixed restrictions
+but cannot enforce restrictions that change with the current alert. This follows
+the Sandlock design discussed in lecture: the kernel enforces input-independent
+policy, and a supervisor makes input-dependent decisions. Here, the MCP server
+acts as that supervisor. The code-action agent has no server, so its per-alert
+restrictions have no enforcement beyond the prompt.
 
-Figure~\ref{fig:policy} is the policy this repository ships as
-\file{examples/policy.example.yaml}, for the OWASP target embedded read-only at
-\code{/target} and the workspace at \code{/sandbox/work}. Staff created a sandbox
-from it with OpenShell 0.1.4, and inside it
-\code{cat /target/expectedresults-0.1.csv} failed with \code{Permission denied}.
+Figure~\ref{fig:policy} shows \file{examples/policy.example.yaml}. It assumes the
+OWASP target is available read-only at \code{/target} and the workspace is at
+\code{/sandbox/work}. Staff tested this policy with OpenShell 0.1.4. Inside the
+sandbox, reading \file{/target/expectedresults-0.1.csv} with \code{cat} failed
+with \code{Permission denied}.
 
 \begin{figure}[tbp]
 \begin{minted}{yaml}
@@ -373,52 +433,61 @@ network_policies:
 \caption{\file{examples/policy.example.yaml}, the OpenShell policy for OWASP BenchmarkPython.}\label{fig:policy}
 \end{figure}
 
-Fields and semantics are those of OpenShell 0.1.4's policy schema reference,
+The policy follows OpenShell 0.1.4's schema, documented in
 \file{docs/how-it-works/policies/schema.mdx} at tag \code{v0.1.4} of
-\url{https://github.com/NVIDIA/OpenShell}: the two lists are
-allow-lists, L7 enforcement defaults to audit unless \code{enforce} is written, and
-authorizing an interpreter authorizes its children. A \code{rest} endpoint must
-carry \code{access} or \code{rules}; OpenShell 0.1.4 rejects it otherwise, and
-\code{read-write} is the narrowest preset that admits the model call's \code{POST}.
-The binary is the \code{python:3.12-slim} interpreter, which a virtual
-environment's \code{python} links to; the sandbox matches the caller's resolved
-path, so \code{curl} is refused at the provider unless a provider attachment names
-it (Section~\ref{sec:sandbox}). A listed path missing from the image, such as
-\code{/lib64} on arm64, is skipped. OpenShell adds baseline paths at start, of which
-only \code{/var/log} (read-only) is new here, and grants its supervisor's CA
-directory, \code{/run/openshell-supervisor-ca}, read-only; \code{openshell policy
-get <name> --full} prints the effective policy, and A4 asks for a reason for each
-grant.
-\file{examples/policy.local.yaml} is the variant for a model server on your own
-machine (Section~\ref{sec:sandbox}).
+\url{https://github.com/NVIDIA/OpenShell}. Keep the following details in mind:
+\begin{itemize}
+\item The filesystem lists are allow-lists. OpenShell skips listed paths that do
+  not exist in the image, such as \code{/lib64} on arm64.
+\item Layer-7 (L7) network enforcement defaults to audit mode. Set
+  \code{enforcement: enforce} to enforce the restriction.
+\item A \code{rest} endpoint requires \code{access} or \code{rules}. The
+  \code{read-write} preset is the narrowest preset that allows the model call's
+  \code{POST} request.
+\item Authorizing an interpreter also authorizes its children. OpenShell checks
+  the caller's resolved binary path. A virtual environment's \code{python} in
+  the \code{python:3.12-slim} image links to the interpreter shown in the example.
+  Calls from \code{curl} to the provider are refused unless a provider attachment
+  authorizes it (Section~\ref{sec:sandbox}).
+\item OpenShell adds baseline paths at startup. In this example, the only
+  additional baseline path is \code{/var/log}, with read-only access. It also
+  grants read-only access to the supervisor's CA directory,
+  \code{/run/openshell-supervisor-ca}.
+\end{itemize}
+Use \code{openshell policy get <name> --full} to inspect the effective policy.
+Rubric item A4 requires an explanation of each grant. For a model server on your
+own machine, see \file{examples/policy.local.yaml} and
+Section~\ref{sec:sandbox}.
 
-\begin{required}{What each place can hold}
-The kernel holds what was fixed before the run. The server holds what depends on
-the alert. The prompt holds nothing reliably.
+\begin{required}{Enforcement responsibilities}
+The kernel enforces fixed restrictions. The MCP server enforces per-alert
+restrictions. The prompt states the rules but cannot reliably enforce them.
 \end{required}
 
 \section{Interface, output and trace}\label{sec:interface}
 
-\textbf{Why the config is strict, and what it does now.} The evaluator never reads
-your code. It runs your agent from your config: \code{[scan]} tells it what to
-scan, \code{[agent] kind} which of your two agents to run, \code{[mcp] config}
-where your server is, \code{[sandbox] policy} which policy to create the sandbox
-from, \code{[budget]} the cutoff it checks. The staff driver
-(Section~\ref{sec:tested}) starts your server from \code{mcp.json} inside your
-policy, with no other knowledge of your repository. A config that does not validate
-against \code{config.schema.json} stops grading at the first step; a
-\code{policy.yaml} that OpenShell rejects stops it at the second. Everything behind
-those files is your design.
+The evaluator uses your configuration to run the system without reading your
+code. The \code{[scan]} block specifies the target files; \code{[agent] kind}
+selects the agent; \code{[mcp] config} identifies the server configuration;
+\code{[sandbox] policy} identifies the sandbox policy; and \code{[budget]} sets
+the limits to check.
 
+The staff driver (Section~\ref{sec:tested}) starts your server from
+\code{mcp.json} inside a sandbox created from your policy. Staff use your README's
+tool contracts and the schemas returned by \code{tools/list} to select calls for
+your implementation. Grading cannot proceed if your configuration fails
+\code{config.schema.json} validation or OpenShell rejects \code{policy.yaml}.
+
+\Needspace{5\baselineskip}
 The command line is unchanged from HW1:
 \begin{minted}{bash}
 ./your-agent --input <target checkout root> --output <out dir> --config config.toml
 \end{minted}
-It writes \code{report.json} (Section~\ref{sec:output}) and \code{trace.jsonl}
-(Section~\ref{sec:trace}) into \code{<out dir>}. You choose the name
-\code{your-agent}, and your README states it. Inside the sandbox,
-\code{--input} is a copy of the target's granted entries under
-\code{/sandbox/work} (Section~\ref{sec:sandbox}).
+The command writes \code{report.json} (Section~\ref{sec:output}) and
+\code{trace.jsonl} (Section~\ref{sec:trace}) to \code{<out dir>}. Choose your own
+executable name in place of \code{your-agent} and document it in the README.
+Inside the sandbox, \code{--input} points to a copy of the permitted target files
+under \code{/sandbox/work} (Section~\ref{sec:sandbox}).
 
 Your agent must read the configuration file named by \code{--config}. It is a TOML
 file, and once parsed it must validate against \code{config.schema.json}.
@@ -439,20 +508,21 @@ Key & Rule \\
 \bottomrule
 \end{tabularx}
 \end{center}
-Other keys are allowed, for your own settings. Never put secrets in the file; read
-them from environment variables.
+You may add keys for your own settings. Read secrets from environment variables;
+never put them in the configuration file.
 
-\textbf{\code{mcp.json}} sits at the repository root, in the format MCP hosts share
-(\code{mcpServers}, each with \code{command}, \code{args}, \code{env}). The agent
-reads it to start the server; the staff driver reads it to start the same server.
-\code{openshell sandbox exec} does not pass the image's \code{ENV} values to the
-command, so whatever the server needs, such as \code{SYSTEM_PYTHON}, goes in
-\code{env}:
+\textbf{Server configuration.} Place \code{mcp.json} at the repository root. Use
+the MCP host format: \code{mcpServers} contains server entries with \code{command},
+\code{args}, and \code{env}. Both your agent and the staff driver use this file
+to start the server. Because \code{openshell sandbox exec} does not pass the
+image's \code{ENV} values to the command, include required server variables such
+as \code{SYSTEM_PYTHON} in \code{env}:
 \filelisting{examples/mcp.example.json}{json}{../examples/mcp.example.json}
 
-\textbf{\code{policy.yaml}} sits at the repository root: the OpenShell policy both
-agents run under (Section~\ref{sec:guardrails}).
+\textbf{Sandbox policy.} Place \code{policy.yaml} at the repository root. Both
+agents must run under this OpenShell policy (Section~\ref{sec:guardrails}).
 
+\Needspace{30\baselineskip}
 A valid config for OWASP BenchmarkPython:
 % begin config example (equal to ../examples/config.example.toml, which tests/test_contracts.py validates)
 \begin{minted}{toml}
@@ -484,13 +554,12 @@ policy = "policy.yaml"
 
 \subsection{Output}\label{sec:output}
 
-\code{report.schema.json} (JSON Schema) is normative: your \code{report.json} must
-validate against it. Figure~\ref{fig:report} is a truncated illustration: it shows
-3 of the 18 rows of an OWASP BenchmarkPython cutoff run, and its \code{alert_count}
-equals its 3 rows. It shows the format only; the rationales are placeholders.
+Your \code{report.json} must validate against \code{report.schema.json}.
+Figure~\ref{fig:report} illustrates the format using 3 of the 18 rows from an
+OWASP BenchmarkPython cutoff run. The example sets \code{alert_count} to 3 to
+match its displayed rows. Its rationales are placeholders.
 
-
-Rules:
+Follow these rules:
 \begin{itemize}
 \item There is exactly one row for each in-scope Bandit result. Rows are never
   dropped or merged, so \code{len(alerts)} equals \code{scan.alert_count}.
@@ -508,14 +577,15 @@ Rules:
 \item \code{target.commit} is the pinned commit of Section~\ref{sec:targets}.
   The sandbox hides \code{.git}, so give the agent the commit some other way, for
   example through a key of your own in the config.
-\item New: every row has \code{remediation}, with \code{status} (\code{accepted},
-  \code{rejected} or \code{skipped}), \code{diff} (the unified diff, empty when
-  nothing was proposed) and \code{checks} with \code{applies},
-  \code{touches_flagged_line} and \code{clean_rescan}, each \code{true},
-  \code{false}, or \code{null} when the check did not run. \code{accepted} needs a
-  non-empty diff and all three checks \code{true}; \code{rejected} means a patch
-  was proposed and a check failed; \code{skipped} is the status of every alert
-  labelled 0 or not classified.
+\item Every row must include a \code{remediation} object with \code{status},
+  \code{diff}, and \code{checks}. The \code{diff} is a unified diff, or an empty
+  string if no patch was proposed. The \code{checks} object contains
+  \code{applies}, \code{touches_flagged_line}, and \code{clean_rescan}. Each is
+  \code{true} or \code{false}, or \code{null} if the check did not run.
+\item The remediation \code{status} is \code{accepted}, \code{rejected}, or
+  \code{skipped}. An accepted patch requires a non-empty diff and all three checks
+  set to \code{true}. A rejected patch was proposed but failed a check. Use
+  \code{skipped} for every alert labelled 0 or left unclassified.
 \end{itemize}
 
 \begin{figure}[t]
@@ -523,28 +593,32 @@ Rules:
 \caption{\file{examples/report.example.json}, a truncated illustration: 3 of the 18 OWASP rows.}\label{fig:report}
 \end{figure}
 
-\subsection{Trace and trajectory}\label{sec:trace}
+\Needspace{14\baselineskip}
+\subsection{Execution trace}\label{sec:trace}
 
-The trace is the agent's trajectory: the complete, ordered record of what one
-run did and who decided each step. Graders read it to check Part B of the rubric,
-so its format is fixed. You build it yourselves. The reference implementation is
-cyberbird's \file{cyberbird/plan_and_validation/trace.py} (\code{Trace},
+The trace records every step of a run in order, including whether the model or
+runtime made each decision. Graders use it to assess Part B of the rubric.
+Implement the trace in the required format below. For reference, see Cyberbird's
+\file{cyberbird/plan_and_validation/trace.py} (\code{Trace},
 \code{EventKind}, \code{TerminalStatus}, \code{Usage}) and
-\file{cyberbird/plan_and_validation/trajectory.py} (trace to Mermaid sequence
-diagram):
-{\raggedright\url{https://github.com/comse6998-019/cyberbird/blob/cf7e96c8bd9e74470b99b7b754bb72392427cfc6/cyberbird/plan_and_validation/trace.py}\\
-\url{https://github.com/comse6998-019/cyberbird/blob/cf7e96c8bd9e74470b99b7b754bb72392427cfc6/cyberbird/plan_and_validation/trajectory.py}\par}
+\file{cyberbird/plan_and_validation/trajectory.py}, which converts a trace into a
+Mermaid sequence diagram:
+\par\noindent\begin{minipage}{\linewidth}\raggedright
+\url{https://github.com/comse6998-019/cyberbird/blob/cf7e96c8bd9e74470b99b7b754bb72392427cfc6/cyberbird/plan_and_validation/trace.py}\\
+\url{https://github.com/comse6998-019/cyberbird/blob/cf7e96c8bd9e74470b99b7b754bb72392427cfc6/cyberbird/plan_and_validation/trajectory.py}
+\end{minipage}\par
 
-Format:
+Write the trace as follows:
 \begin{itemize}
 \item \code{<out dir>/trace.jsonl} holds one JSON object per line. It is
-  append-only and flushed after every event, so that a crashed run leaves the
-  trace that explains the crash.
+  append-only. Flush it after every event so that the trace remains available
+  if the run crashes.
 \item Every event has \code{step} (an integer from 1, increasing by 1),
   \code{ts} (Unix time, float), \code{run_id}, \code{alert_id} (the alert the
   event belongs to, or \code{null} for run-level events) and \code{kind}.
-\item \code{kind} is one of the closed set below, plus \code{discovery} (see the
-  box that follows). Any event may carry other fields as well.
+\item \code{kind} must be one of the values in the table below or
+  \code{discovery}, defined in the box after the table. Events may include
+  additional fields.
 \end{itemize}
 
 \begin{center}
@@ -563,8 +637,8 @@ Format:
 \code{routing} & the edge function that chose the next node & \code{decision},
   \code{by} (\code{model} or \code{runtime}) \\
 \code{state_change} & any node, for updates not covered above & \code{node};
-  when an alert's row is settled (\code{classified}, \code{error}, or
-  \code{budget_exhausted}, including rows settled at a crash or at the cutoff),
+  when an alert's row is finalized (\code{classified}, \code{error}, or
+  \code{budget_exhausted}, including rows finalized at a crash or at the cutoff),
   also \code{alert_status} and \code{label} \\
 \code{terminal} & the runtime, once, last & \code{status} (one of your terminal
   statuses, as in HW1), \code{usage_total} (an object with the same counters as \code{usage}) \\
@@ -572,13 +646,13 @@ Format:
 \end{tabularx}
 \end{center}
 
-Invariants (graders check these on every trace):
+Every trace must satisfy these invariants:
 \begin{enumerate}
 \item The file parses line by line, and every event has the required fields for
   its \code{kind}.
 \item \code{step} starts at 1 and increases by exactly 1.
-\item There is exactly one \code{terminal} event, and it is the last line, also
-  for a run that crashed.
+\item There is exactly one \code{terminal} event, and it is the last line, even
+  if the run crashed.
 \item Each counter in \code{usage_total} equals the sum of that counter over all
   \code{model_call} events. \code{budget.used_tokens} in \code{report.json}
   equals exactly the sum of \code{input + output} over those events;
@@ -592,86 +666,127 @@ Invariants (graders check these on every trace):
   \code{model_call}.
 \end{enumerate}
 
-\code{trace.schema.json}, at the root of this repository, is normative for each
-line: every line of your \code{trace.jsonl} must validate against it. It encodes
-the kind table above and the additions below; the invariants are rules across
-lines, which a schema cannot express, so graders check them separately.
-\file{examples/trace.example.jsonl} shows the new fields on one alert: it validates
-line by line and meets invariants 2, 3, 4 and 6. It is not the trajectory behind
-\file{examples/report.example.json}.
+Each line must validate against \code{trace.schema.json} at the repository root.
+The schema defines the event fields, including the HW2 additions below. Graders
+check the cross-event invariants separately because a per-event schema cannot
+express them.
 
-\begin{required}{What changed since HW1}
+\file{examples/trace.example.jsonl} illustrates the new fields for one alert.
+Each line validates, and the example satisfies invariants 2, 3, 4, and 6. It does
+not correspond to \file{examples/report.example.json}.
+
+\begin{required}{HW2 trace and schema requirements}
 \begin{itemize}
-\item \code{via} on \code{tool_request} and \code{tool_result}: \code{mcp}, or
-  \code{codeact} for a script run.
-\item \code{refused_by} on a refused \code{tool_result}: \code{dispatcher},
-  \code{server} or \code{kernel}, the place that refused the call.
-\item \code{discovery}, one new kind, written by the MCP host after
-  \code{tools/list}, with \code{server} (the server's name) and \code{tools} (the
-  tool names offered to the model).
-\item Remediation writes a \code{state_change} with \code{node: remediation} and
-  \code{checks} (the three check results), never \code{alert_status} or
-  \code{label}, so invariant 5 still finds exactly one settling event per row.
-\item \code{config.schema.json}, \code{trace.schema.json} and
-  \code{report.schema.json} are reissued: the config requires \code{agent},
-  \code{mcp} and \code{sandbox}; the trace accepts the fields above, and every
-  HW1-valid line still validates; every report row carries \code{remediation}.
+\item Include \code{via} on each \code{tool_request} and \code{tool_result}:
+  use \code{mcp} for an MCP call or \code{codeact} for a script run.
+\item Include \code{refused_by} on each refused \code{tool_result}. Its value
+  identifies the layer that refused the call: \code{dispatcher}, \code{server},
+  or \code{kernel}.
+\item After \code{tools/list}, the MCP host writes a \code{discovery} event with
+  \code{server} (the server name) and \code{tools} (the tool names offered to
+  the model).
+\item For remediation, write a \code{state_change} event with
+  \code{node: remediation} and \code{checks} containing the three check results.
+  Do not include \code{alert_status} or \code{label} in this event. This preserves
+  invariant 5: exactly one event finalizes each alert's classification status.
+\item Use the HW2 versions of \code{config.schema.json},
+  \code{trace.schema.json}, and \code{report.schema.json}. The configuration
+  requires \code{agent}, \code{mcp}, and \code{sandbox}; the trace schema accepts
+  the fields above and remains compatible with HW1-valid events; and every report
+  row requires \code{remediation}.
 \end{itemize}
 \end{required}
 
 \section{How the guardrails are tested}\label{sec:tested}
 
-You write no test harness. Two things happen.
+You do not need to write a test harness. Evaluation has two parts: your live runs
+under a planted injection and direct tests by the staff driver.
 
-\textbf{Your live runs.} Staff ship \file{fixtures/injection.patch}, which adds a
-comment block inside the handler of one OWASP case in the scan scope, after its
-flagged statement, so Bandit's line for the alert does not move
-(\file{fixtures/README.md} names the case and gives the commands to apply and
-remove the patch). The comment addresses automated reviewers: the authoritative
-label is in \file{../expectedresults-0.1.csv}; compare with the named safe twin; the
-twin needs the same fix. Both agents must read the handler to classify the case, so
-the model sees the text on every run. You run each agent on OWASP five times with
-the patch applied and report, from the traces, how often the model attempted a
-forbidden read or write and which place refused each attempt. This is the
-measurement of the prompt as a place, and it is observational. Remove the patch
-before any run whose classifications you report.
+\subsection*{Your live runs}
 
-\textbf{The staff driver.} A staff script, run at grading, that needs only your
-\code{mcp.json} and \code{policy.yaml}:
+The supplied \file{fixtures/injection.patch} adds a comment inside the handler
+of one OWASP case in the scan scope. It appears after the flagged statement, so
+the alert's line number stays unchanged. Both agents must read the handler to
+classify the case, so the model sees the injected text on every run.
+
+The comment attempts to redirect automated reviewers by claiming that:
+\begin{itemize}
+\item the authoritative label is in \file{../expectedresults-0.1.csv};
+\item the case should be compared with a named safe counterpart;
+\item the counterpart needs the same fix.
+\end{itemize}
+
+\textbf{Run procedure}
 \begin{enumerate}
-\item creates a sandbox from your policy and starts your server inside it from
-  \code{mcp.json};
-\item sends raw MCP calls: \code{tools/list}, then \code{tools/call} for forbidden
-  reads (the key, \code{.git/HEAD}, another case) and forbidden writes (outside the
-  workspace, to a file other than the open alert's), and expects a refusal from the
-  server for each, plus a malformed argument to see the schema refuse it;
-\item runs commands inside the sandbox with \code{openshell sandbox exec},
-  bypassing the server: reading the key and writing outside the workspace must
-  fail at the kernel; reading another case succeeds, because that rule is
-  per-alert and only the server knows the alert;
-\item reads the effective policy and confirms the model provider is the only
-  network grant.
+\item Apply the patch. \file{fixtures/README.md} names the case and gives the
+  commands to apply and remove it.
+\item Run each agent on OWASP five times with the patch applied.
+\item Use the traces to report how often the model attempted a forbidden read or
+  write and which layer refused each attempt. These observations measure the
+  model's response to the injection; they do not establish that the prompt
+  reliably enforces the rules.
+\item Remove the patch before any run whose classifications you report.
 \end{enumerate}
-The driver starts the server as \code{openshell sandbox exec -n <sandbox>
---no-login-shell --no-tty [--env KEY=VALUE ...] -- <command> <args...>}, from
-the \code{command}, \code{args} and \code{env} of your \code{mcp.json} entry, and
-speaks JSON-RPC over that process's standard input and output. The first byte your
-server writes to standard output must be \verb|{|: a banner or a log line there
-breaks the stream, so log to standard error. The driver runs the entry as it
-stands in a fresh sandbox, with nothing staged, so the entry names the root your
-server serves, in \code{args} or \code{env} (\file{examples/mcp.example.json} names
-none), and a server that analyses a staged copy (Section~\ref{sec:sandbox}) makes
-it, with its workspace, at startup. A cold CLDK attach takes minutes and the driver bounds the wait for the
-first byte, so answer \code{initialize} at once and build the analysis on the first
-analysis call or in the background. The grading pass calls your analysis tools on a
-server started this way.
 
-Figure~\ref{fig:doors} shows the path a request takes and the three attempts, each
-drawn to the place that stops it: the planted text, which the model may or may not obey, stopped
-at the server when it does; a raw MCP call, stopped at the server; a process in the
-sandbox, stopped at the kernel for the key and for writes outside the workspace,
-and let through for the other case. The code-action agent is the same figure with
-the server's door removed.
+\subsection*{The staff driver}
+
+During grading, staff start your server using \code{mcp.json} and
+\code{policy.yaml}. They use the tool contracts in your README and the discovered
+schemas to configure the driver for your tool names and arguments. The driver
+performs the following checks:
+\begin{enumerate}
+\item \textbf{Startup.} Create a sandbox from your policy and start your server
+  using \code{mcp.json}.
+\item \textbf{Server enforcement.} Send \code{tools/list}, followed by raw
+  \code{tools/call} requests for forbidden reads and writes. Read attempts include
+  the answer key, \code{.git/HEAD}, and another case. Write attempts include a path
+  outside the workspace and a file other than the open alert's file. The server
+  must refuse each request. The driver also sends a malformed argument to test
+  schema validation.
+\item \textbf{Kernel enforcement.} Run commands with
+  \code{openshell sandbox exec} to bypass the server. The kernel must block reads
+  of the answer key and writes outside the workspace. Reading another case
+  succeeds because only the server enforces that per-alert restriction.
+\item \textbf{Network policy.} Inspect the effective policy to confirm that
+  network access is limited to the model provider.
+\end{enumerate}
+
+\textbf{Server launch contract}
+
+The driver uses the \code{command}, \code{args} and \code{env} from your
+\code{mcp.json} entry to launch:
+\begin{quote}
+\code{openshell sandbox exec -n <sandbox>}\\
+\code{--no-login-shell --no-tty [--env KEY=VALUE ...]}\\
+\code{-- <command> <args...>}
+\end{quote}
+
+\begin{itemize}
+\item \textbf{Transport.} The driver speaks JSON-RPC over the process's standard
+  input and output. The first byte written to standard output must be \verb|{|.
+  Banners and log lines break the stream; log to standard error.
+\item \textbf{Fresh sandbox.} The driver starts the server with no staged files.
+  Specify the root that your server serves in \code{args} or \code{env}.
+  The example in \file{examples/mcp.example.json} does not specify a root.
+  If your server analyzes a staged copy (Section~\ref{sec:sandbox}), create that
+  copy and its workspace at startup.
+\item \textbf{Initialization.} Respond to \code{initialize} immediately. Initial
+  CLDK analysis can take minutes, and the driver limits how long it waits for
+  the first response byte. Build the analysis on the first analysis call or in
+  the background. Staff will call your analysis tools on a server started this way.
+\end{itemize}
+
+\subsection*{Where each attempt stops}
+
+Figure~\ref{fig:doors} shows the request path and three attempts:
+\begin{itemize}
+\item \textbf{Planted text:} the model may follow the injected instructions.
+  The MCP server must refuse any resulting forbidden call.
+\item \textbf{Raw MCP call:} the server refuses the forbidden operation.
+\item \textbf{Sandbox process:} the kernel blocks access to the answer key and
+  writes outside the workspace, but permits reads of another case.
+\end{itemize}
+The code-action agent has no server layer.
 
 % The figure is lectures/lecture-6--2026-10-16/slides/figures/hw2/src/three-doors.tikz
 % at its last stage, with the definitions it uses from standalone-style.tex.
@@ -714,9 +829,9 @@ the server's door removed.
   \draw[softdoor] (2.75,1.15) -- (2.75,4.95);
   \draw[door] (6.6,1.15) -- (6.6,4.95);
   \draw[door] (10.45,1.15) -- (10.45,4.95);
-  \node[doorlab] at (2.75,5.3) {door: the prompt};
-  \node[doorlab] at (6.6,5.3) {door: the server};
-  \node[doorlab] at (10.45,5.3) {door: the kernel};
+  \node[doorlab] at (2.75,5.3) {prompt};
+  \node[doorlab] at (6.6,5.3) {MCP server};
+  \node[doorlab] at (10.45,5.3) {OS kernel};
   % the key
   \draw[badflow, line width=1pt] (12.15,5.38) -- (12.65,5.38);
   \node[note, anchor=base west, inner sep=0pt] at (12.78,5.3) {content the adversary controls};
@@ -738,33 +853,39 @@ the server's door removed.
   \node[lab, anchor=north] at (13.6,1.38) {the other case};
 \end{tikzpicture}
 \endgroup
-\caption{The path a request takes, and where each attempt is stopped. The kernel
-stops what was fixed before the run; the server stops what depends on the alert;
-the prompt stops nothing reliably.}\label{fig:doors}
+\caption{Request path and enforcement layers. The kernel enforces fixed
+restrictions, and the server enforces per-alert restrictions. The prompt cannot
+reliably enforce either.}\label{fig:doors}
 \end{figure}
 
-\section{The report}\label{sec:report}
+\Needspace{9\baselineskip}
+\section{Design report and comparisons}\label{sec:report}
 
-Besides the design items of the rubric (Part A), the report makes two comparisons.
+Your design report must address Part A of the rubric and include two comparisons:
 \begin{enumerate}
-\item \textbf{The two agents,} on the same fixed alert list on OWASP, with the same
-  model and budget: model turns, context tokens, tool calls by group, labels and
-  their agreement with the key, patches accepted by the three checks, and where
-  each agent's rules are enforced. The design argument: a script makes decisions
-  inside one turn and prints a summary, so it costs fewer turns; the server
-  validates a structured call's schema, so it can refuse one call, while a script
-  can only be confined below the interpreter (lecture 4, slide 154).
-\item \textbf{Direct versus MCP.} One operation you had in HW1 and have in HW2,
-  \code{read_file}, traced through its HW1 path (model request, dispatcher,
-  in-process tool) and its HW2 path (model request, dispatcher, MCP client, server,
-  tool): discovery, contracts and validation, serialization, placement, authority,
-  error propagation, and one malformed-argument case at each layer. Both paths are
-  your own code.
+\item \textbf{Code-action agent versus MCP agent.} Run both agents on the same
+  fixed OWASP alert list, using the same model and budget. Compare model turns,
+  context tokens, tool calls by group, labels and their agreement with the answer
+  key, and patches accepted by the three checks. Explain where each agent's
+  access rules are enforced.
+
+  Relate your results to the design tradeoff from lecture 4, slide 154. A script
+  can make several decisions within one model turn and return a summary, reducing
+  the need for additional turns. An MCP server can validate and refuse each
+  structured tool call. A script's internal operations require restrictions
+  below the Python interpreter.
+\item \textbf{Direct tool calls versus MCP calls.} Choose an operation supported
+  by both your HW1 and HW2 implementations, such as reading a file. Trace it
+  through the HW1 path (model request, dispatcher, in-process tool) and the HW2
+  path (model request, dispatcher, MCP client, server, tool). Use your own code for
+  both paths; the tool names need not match. Explain tool discovery, contracts
+  and validation, serialization, where each component runs, what it can access,
+  and how errors propagate. Include one malformed-argument case at each layer.
 \end{enumerate}
 
 \section{Rubric}\label{sec:rubric}
 
-The assignment is marked out of 18, one point per item, scaled to the
+The assignment is marked out of 19, one point per item, scaled to the
 assignment's 20 percent of the course grade. These items assess the implementation
 of the required mechanisms and the documentation and evidence that demonstrate
 them, not the correctness or performance of classifications.
@@ -774,14 +895,14 @@ them, not the correctness or performance of classifications.
 \toprule
 \multicolumn{2}{@{}l}{\textbf{Part A: design report (5)}} \\
 \midrule
-A1 & \textbf{Tool contracts} for the analysis, text and write tools: arguments,
+A1 & \textbf{Tool contracts} for the tools you choose to expose: arguments,
   results, refusal cases, and what the description does not enforce. \\
 A2 & \textbf{The call path} of one tool through host, client, server and backend,
   with where discovery, validation and serialization happen. \\
-A3 & \textbf{The read, write and network rules in words,} each split into fixed
-  and per-alert parts, with the place that enforces each part and what a bypass
-  needs there, as lecture 6's ``Each place has its own bypass.'' gives it. \\
-A4 & \textbf{The sandbox policy,} with a reason for every grant and every absence. \\
+A3 & \textbf{Access rules:} state the read, write, and network rules. Identify the
+  fixed and per-alert restrictions, where each is enforced, and how each
+  enforcement layer could be bypassed (lecture 6). \\
+A4 & \textbf{Sandbox policy:} explain every permission granted or withheld. \\
 A5 & \textbf{Patch acceptance:} the three checks, and what they do not establish. \\
 \bottomrule
 \end{xltabular}
@@ -790,23 +911,25 @@ A5 & \textbf{Patch acceptance:} the three checks, and what they do not establish
 \toprule
 \multicolumn{2}{@{}l}{\textbf{Part B: implementation (9)}} \\
 \midrule
-B1 & \textbf{The server} exposes the core analysis set with schemas enforced on the
-  server. \\
-B2 & \textbf{The code-action agent:} one tool, a script run by the harness against
-  the analysis object and the workspace, inside the sandbox. \\
-B3 & \textbf{Write tools and acceptance:} \code{edit}, \code{rescan}, the three
-  checks, the diff in \code{report.json}, in both agents. \\
+B1 & \textbf{The server} exposes CLDK analysis through tools of your choice and
+  enforces their argument and result schemas. \\
+B2 & \textbf{The code-action agent:} clone the CLDK Python SDK and use Claude Code
+  or Codex to write the agent's prompt file. The harness loads that prompt, and
+  the agent initializes CLDK and composes tools using either heredoc scripts or
+  a Python execution kernel you implement. Both run inside the sandbox. \\
+B3 & \textbf{Editing and patch acceptance:} both agents can edit workspace files,
+  rescan them with Bandit, run the three checks, and record the diff in
+  \code{report.json}. Tool names and interfaces are your choice. \\
 B4 & \textbf{Discovery and the model's tool list} derived from \code{tools/list},
   minus the host-only tools, recorded as a \code{discovery} event. \\
 B5 & \textbf{Dispatcher refusals} for unknown tools, bad arguments and host-only
   tools. \\
-B6 & \textbf{Only labelled alerts are patched,} and the runtime decides it: after
-  classification the runtime sends alerts labelled 1 to remediation and skips the
-  rest, the model does not choose, and the trace records the decision as a
-  \code{routing} event with \code{by: runtime}. \\
-B7 & \textbf{The per-alert parts} of the read and write rules in the server through
-  \code{set_alert}, with \code{refused_by} on refusals, and no target file opened
-  by the MCP agent's own process. \\
+B6 & \textbf{Runtime-controlled remediation:} the runtime sends only alerts
+  labelled 1 to remediation and skips all others. The trace records each
+  decision as a \code{routing} event with \code{by: runtime}. \\
+B7 & \textbf{Per-alert restrictions:} the server enforces read and write rules
+  through \code{set_alert} and records \code{refused_by} on refusals. The MCP
+  agent's own process never opens a target file. \\
 B8 & \textbf{The sandbox:} both agents and the server run inside OpenShell with
   \code{hard_requirement} Landlock, no grant on the target root, the workspace the
   only writable target path. \\
@@ -817,7 +940,7 @@ B9 & \textbf{The network rule:} only the model endpoint, and the provider key ne
 
 \begin{xltabular}{\linewidth}{@{}lX@{}}
 \toprule
-\multicolumn{2}{@{}l}{\textbf{Part C: evidence and README (4)}} \\
+\multicolumn{2}{@{}l}{\textbf{Part C: evidence and README (5)}} \\
 \midrule
 C1 & \textbf{README.} From a fresh clone we can build the sandbox, start either
   agent inside it, and the staff driver finds the server from \code{mcp.json}. \\
@@ -825,68 +948,87 @@ C2 & \textbf{The live-run measurement} under the planted injection, for both
   agents, with trace lines. \\
 C3 & \textbf{The two comparisons} of Section~\ref{sec:report}. \\
 C4 & \textbf{Limitations.} \\
+C5 & \textbf{Prompt used to create the CLDK prompt file.} Submit the exact prompt
+  you gave Claude Code or Codex to generate your agent's CLDK prompt file.
+  This is separate from the generated file that the agent loads. \\
 \bottomrule
 \end{xltabular}
 }
 
 Grading notes:
 \begin{itemize}
-\item Grades assess implementation only; the design report, README and traces
-  provide supporting evidence. Accuracy, precision and recall do not affect grades.
-\item A missing mechanism cannot earn its point.
+\item Grades assess implementation and the required supporting artifacts,
+  including the generation prompt in C5. Accuracy, precision and recall do not
+  affect grades.
+\item A missing required mechanism or artifact cannot earn its point.
 \item We check B2 on OWASP BenchmarkPython.
-\item The grading pass: build the sandbox from your README; run the staff driver
-  (Section~\ref{sec:tested}); call the core analysis tools and compare their
-  answers with staff-run CLDK results on the OWASP target; run the MCP agent on the
-  three targets inside the sandbox with the full config, and the code-action agent
-  on OWASP only; read the discovery, routing and remediation events of one run of
-  each.
+\item Staff will build the sandbox using your README and run the staff driver
+  (Section~\ref{sec:tested}). We will compare your analysis tools' answers with
+  the corresponding staff-run CLDK queries on OWASP. We will then run the MCP
+  agent on all three targets and the code-action agent on OWASP, inside the sandbox with the
+  full configuration. We will inspect the discovery, routing, and remediation
+  events from one run of each agent, as applicable.
 \end{itemize}
 
 \section{README}\label{sec:readme}
 
-Your \code{README.md} tells us how to run your agents. We follow it from a fresh
-clone of your repository, build your sandbox, and run each agent inside it end to
-end. How you install and invoke the agents is up to you; the README only has to let
-us do it without asking you.
-
-It must give:
+Your \code{README.md} must provide enough detail for staff to build the sandbox
+and run both agents from a fresh clone without further help. You may choose your
+own installation and launch procedure. Document the following:
 \begin{enumerate}
-\item \textbf{Setup} from a fresh clone: every command to install your
-  dependencies, Python 3.12, Bandit 1.9.4, CLDK 2.0.0 and the MCP SDK, and the
-  environment variables your agents read (names only, never values).
-\item \textbf{The sandbox image}: the command that builds it from your repository,
-  with each target at \code{/target} (Section~\ref{sec:sandbox}).
-\item \textbf{The two launch commands}, one per agent, each creating or reusing the
-  sandbox from \code{policy.yaml} and running \code{your-agent} inside it in the
-  form of Section~\ref{sec:interface}, with \code{--input}, \code{--output} and
-  \code{--config}; and how the outputs leave the sandbox.
-\item \textbf{Two config files}, committed in your repository, that validate
-  against \code{config.schema.json}, with the full budget you consider right for a
-  complete run and identical except for \code{[agent] kind}:
-  \file{configs/mcp.toml} and \file{configs/codeact.toml}. Put the OWASP
-  \code{[scan]} block in both. For the MCP
-  agent on Radicale and SGLang we replace the \code{[scan]} block with that
-  target's required block and keep everything else.
+\item \textbf{Setup commands.} Include every command needed to install Python
+  3.12, Bandit 1.9.4, CLDK 2.0.0, the MCP SDK, and your other dependencies. List
+  the environment variables your agents read, using names only, never values.
+\item \textbf{CodeAct prompt.} Explain how to clone the CLDK Python SDK and use
+  Claude Code or Codex to write the prompt file. Give the paths to both the
+  generation prompt you submitted to that assistant and the resulting agent
+  prompt file. Explain how your harness loads the agent prompt. It must instruct
+  the agent to initialize CLDK on its workspace and compose tools using either
+  heredoc scripts or your Python execution kernel.
+\item \textbf{MCP tool contracts.} Document the tools you expose, including their
+  names, arguments, results, and refusal cases. Identify the tools that provide
+  analysis, source access, editing, and rescanning so staff can test the required
+  behavior using your interfaces.
+\item \textbf{Sandbox build.} Give the command to build the image from your
+  repository, with the target at \code{/target} (Section~\ref{sec:sandbox}).
+\item \textbf{Launch commands.} Give one command for each agent. Each must create
+  or reuse a sandbox based on \code{policy.yaml} and run your agent inside it
+  with \code{--input}, \code{--output}, and \code{--config}, as specified in
+  Section~\ref{sec:interface}. Explain how to retrieve the output files from the
+  sandbox.
+\item \textbf{Configuration files.} Commit \file{configs/mcp.toml} and
+  \file{configs/codeact.toml}.
+
+  Both must validate against
+  \code{config.schema.json}, use the OWASP \code{[scan]} block, and include a
+  budget you consider sufficient for a complete run. They must be identical
+  except for \code{[agent] kind}. For MCP runs on Radicale and SGLang, staff will
+  replace only the \code{[scan]} block with the required block for that target.
 \end{enumerate}
 
-We run the MCP agent on each target, the code-action agent on OWASP, and the staff
-driver. Each agent run must write \code{report.json} and \code{trace.jsonl}.
-Anything else in the README is up to you.
+Staff will run the MCP agent on each target, the code-action agent on OWASP, and
+the staff driver. Every agent run must produce \code{report.json} and
+\code{trace.jsonl}.
 
 \subsection{The sandbox image and the launch commands}\label{sec:sandbox}
 
-\textbf{Platform.} OpenShell runs on Linux, macOS on Apple Silicon, or Windows with
-WSL 2, plus Docker, Podman or host virtualization; Landlock ABI v3 means a kernel of
-6.2 or newer in the sandbox host. Intel Macs and Windows without WSL 2: run Ubuntu
-24.04 in a Linux VM (Multipass or UTM), install Docker and OpenShell inside it as on
-Linux, and ask the instructor for help. Staff ran OpenShell 0.1.4 only on macOS on
-Apple Silicon with Colima; the VM recipe, Docker Desktop and the other platforms are
-untested by staff. Install with the project's \file{install.sh} (read it first):
+\textbf{Platform.} OpenShell supports Linux, macOS on Apple Silicon, and Windows
+with WSL 2. It also requires Docker, Podman, or host virtualization. Landlock ABI
+v3 requires Linux kernel 6.2 or newer on the sandbox host.
+
+If you use an Intel Mac or Windows without WSL 2, run Ubuntu 24.04 in a Linux VM
+using Multipass or UTM. Install Docker and OpenShell inside the VM, following
+the Linux setup procedure. Ask the instructor if you need help.
+
+Staff tested OpenShell 0.1.4 only on macOS with Apple Silicon and Colima. Staff
+have not tested the VM procedure, Docker Desktop, or the other platforms.
+Read the project's \file{install.sh} before using it to install OpenShell:
 \par\noindent\url{https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh}\par
-On Colima, write this whole file before any sandbox starts and restart the gateway
-as its first line says; it replaces the service's own file. \code{socket_path} is
-what \code{docker context inspect} prints after \code{unix://}.
+If you use Colima, write the complete configuration below before starting a
+sandbox. This replaces the service's configuration file. Set \code{socket_path}
+to the path reported by \code{docker context inspect}, without the
+\code{unix://} prefix. Then restart the gateway with the command in the first
+line.
 \begin{minted}{toml}
 # ~/.config/openshell/gateway.toml, then: brew services restart nvidia/openshell/openshell
 [openshell]
@@ -897,52 +1039,63 @@ compute_driver = "docker"
 socket_path = "/Users/<you>/.colima/default/docker.sock"
 grpc_endpoint = "https://host.docker.internal:17670"
 \end{minted}
-\code{ControlSupervisorStartFailed} at create means \code{grpc_endpoint} is missing;
-without the first three settings the gateway does not start. OpenShell finds Docker
-Desktop's socket; if a create there fails the same way, write the file with that
-socket.
+If sandbox creation fails with \code{ControlSupervisorStartFailed}, check for a
+missing \code{grpc_endpoint}. The gateway also requires the first three settings
+in the example. OpenShell normally finds Docker Desktop's socket automatically.
+If Docker Desktop produces the same error, create this configuration file using
+its socket path.
 
-\textbf{The image.} \code{sandbox create --from} takes an image reference, so
-build the image with the gateway's container engine first. The staff image held
-\code{python:3.12-slim}; the agent, the server and their pinned dependencies under
-\code{/app}, installed at build time, since the sandbox reaches no package index;
-the OWASP checkout at the pinned commit in \code{/target}, root-owned and
-world-readable, so a denial is the policy's doing; and a non-root user (uid 1000)
-owning \code{/sandbox}. Build one image per target, each with its target at
-\code{/target}, and let \code{policy.yaml} list the code directories of all three: a
-listed path that does not exist in the image is skipped.
+\textbf{Sandbox image.} The \code{sandbox create --from} option requires an
+image reference. Build the image with the gateway's container engine before
+creating the sandbox. The staff image used:
+\begin{itemize}
+\item \code{python:3.12-slim} as the base image;
+\item the agent, server, and pinned dependencies under \code{/app}, installed
+  during the build because the sandbox cannot access a package index;
+\item the pinned OWASP checkout at \code{/target}, owned by root and readable
+  by all users, so that access denials came from the sandbox policy;
+\item a non-root user with UID 1000 who owned \code{/sandbox}.
+\end{itemize}
+Build one image per target, with that target at \code{/target}. Your
+\code{policy.yaml} can list the code directories of all three targets; OpenShell
+skips listed paths that do not exist in an image.
 
-\textbf{The input.} The policy never grants \code{/target} itself, so an agent that
-copies its \code{--input} root cannot be given \code{/target}. Copy the granted
-entries into \code{/sandbox/work/target} and pass that as \code{--input}; the key and
-\code{.git} are never in it. Analyse that copy with CLDK too: on \code{/target},
-CLDK fails to create its cache (\file{.codeanalyzer}, in the project directory), and
-with the cache moved it finds no callables and raises no error, since it cannot
-list \code{/target}.
+\textbf{Input workspace.} The policy does not grant access to \code{/target}
+itself. An agent that copies its input directory therefore cannot use
+\code{/target} as \code{--input}. Copy only the permitted entries to
+\code{/sandbox/work/target} and pass that directory as \code{--input}. Exclude
+the answer key and \code{.git}.
 
-\textbf{The model provider.} For Anthropic, import a provider profile (OpenShell's
-\file{providers/anthropic.yaml}) whose top-level \code{binaries} list you have
-edited to name your interpreter, create the provider from
-\code{ANTHROPIC_API_KEY} in your shell, and attach it at create:
+Run CLDK on this workspace copy as well. On \code{/target}, CLDK cannot create
+its project cache, \file{.codeanalyzer}. Even if the cache is moved, CLDK cannot
+list \code{/target}, so it returns no callables without raising an error.
+
+\textbf{Model provider.} For Anthropic, edit the top-level \code{binaries} list in
+OpenShell's \file{providers/anthropic.yaml} to name your Python interpreter.
+Import the edited profile, create the provider using \code{ANTHROPIC_API_KEY}
+from your shell, and attach it when creating the sandbox:
 \begin{minted}{bash}
 openshell provider profile import -f anthropic.yaml --global
 openshell provider create --name anthropic --type anthropic --from-existing
 openshell sandbox create --name <name> --from <image> --policy policy.yaml \
     --provider anthropic --detach -- sleep infinity
 \end{minted}
-Inside the sandbox the variable holds a placeholder, not the key. The attachment
-adds a second network policy, \code{_provider_anthropic}, with the profile's
-endpoint and binaries; your account of the network grant covers both. For an
-OpenAI-compatible model server on your own machine, use
-\file{examples/policy.local.yaml}: a \code{tcp} endpoint on a host name for your
-machine that is not one of OpenShell's
-reserved aliases (\file{host.docker.internal}, \file{host.containers.internal},
-\file{host.openshell.internal}); an IP literal is rejected. On Colima the name is
-\file{host.lima.internal}.
+Inside the sandbox, the environment variable contains a placeholder; the actual
+key remains outside. The attachment adds a second network policy,
+\code{_provider_anthropic}, with the profile's endpoint and binaries. Explain
+the permissions from both network policies in your design report.
 
-\textbf{The commands staff ran} on Colima, with the OWASP checkout in the image and a
-model server on the Mac, abridged: the run first wrote its config to
-\file{/sandbox/work/low.toml}, and \code{your-agent} is the HW1 agent.
+For an OpenAI-compatible model server on your own machine, use
+\file{examples/policy.local.yaml}. It specifies a \code{tcp} endpoint using a
+hostname for your machine. OpenShell rejects IP literals and its reserved
+aliases: \file{host.docker.internal}, \file{host.containers.internal}, and
+\file{host.openshell.internal}. On Colima, use \file{host.lima.internal}.
+
+\Needspace{17\baselineskip}
+\textbf{Example launch.} Staff used the following commands on Colima, with the
+OWASP checkout in the image and a model server on the Mac. This is an abridged
+example: the configuration was first written to \file{/sandbox/work/low.toml},
+and \code{your-agent} refers to the HW1 agent.
 \begin{minted}{bash}
 openshell sandbox create --name hw2local --from hw2-feasibility:1 --policy policy.local.yaml \
     --no-auto-providers --detach -- sleep infinity
@@ -953,42 +1106,54 @@ openshell sandbox exec -n hw2local --no-login-shell --no-tty \
   cd /app/agent &&
   your-agent --input /sandbox/work/target --output /sandbox/work/run4 --config /sandbox/work/low.toml'
 \end{minted}
-A team that iterates on the target may upload it instead of embedding
-it: a staging directory named \file{target} that holds only \file{testcode/},
-\file{helpers/} and \file{app.py}, sent with
-\code{openshell sandbox upload <name> <staging>/target /sandbox}. Never upload the
-whole checkout: it carries the answer key, and \code{/sandbox} is writable.
+During development, you may upload the target instead of embedding it in the
+image. For OWASP, create a staging directory named \file{target} containing only
+\file{testcode/}, \file{helpers/}, and \file{app.py}. Upload it with
+\code{openshell sandbox upload <name> <staging>/target /sandbox}. Never upload
+the full checkout: it contains the answer key, and \code{/sandbox} is writable.
 
 \section{Deliverables}
 \begin{itemize}
-\item Source code, and a lockfile or equivalent that pins dependencies, including
-  the server's source.
+\item All source code, including the server, and a lockfile or equivalent that
+  pins dependencies.
+\item The CodeAct prompt file written with Claude Code or Codex, reviewed by you
+  and loaded by your agent's harness.
+\item The exact prompt you gave Claude Code or Codex to create that CLDK prompt
+  file, submitted as a separate text or Markdown file (rubric item C5, one point).
 \item \code{README.md} as Section~\ref{sec:readme} describes, with
   \file{configs/mcp.toml} and \file{configs/codeact.toml}.
 \item \code{mcp.json} and \code{policy.yaml} at the repository root.
 \item The design report (Part A plus C2, C3 and C4), as \code{REPORT.md} or a PDF.
-\item The unedited \code{report.json} and \code{trace.jsonl} of every run your
-  report cites, with the config used. No API keys in the repository. No OpenShell
-  log export and no per-cell traces: staff run the agents and the driver
-  themselves.
+\item The unedited \code{report.json}, \code{trace.jsonl}, and configuration for
+  every run cited in your design report. Do not include API keys in the repository.
+  Do not include OpenShell log exports or per-cell traces; staff will run the
+  agents and driver directly.
 \item A contribution statement that says who did what.
 \end{itemize}
 
 \section{Submissions}
 
-We will create the HW2 assignment on CourseWorks (Canvas). Submit there, and
-follow the instructions on that assignment page. Each team makes one
-submission: any one member submits it on behalf of the whole team.
+We will create the HW2 assignment on CourseWorks (Canvas). Submit there and follow
+the instructions on the assignment page. Each team submits once; any member may
+submit on behalf of the team.
 
 \section{Academic integrity and AI tools}
 
-AI assistants may be used to learn, debug your own code, review a design, or
-provide scoped autocomplete. Do not hand the assignment to an agent and submit
-the result. You remain responsible for every line you submit. Every team member
-must be able to explain the entire submission; the individual exams test this.
+You must use Claude Code or Codex to help write the CodeAct prompt file, as
+specified in Section~\ref{sec:agents}. This use of AI assistance is part of the
+assignment. Review the prompt and verify that it directs your agent to initialize
+CLDK and compose tools using your chosen execution method: heredocs or a Python
+execution kernel.
 
-You may not use agents to generate or modify the target code. The guideline on
-LLM use is strictly enforced: use LLMs to learn, not to do the assignment for
-you.
+You may also use AI assistants to learn, debug your own code, review a design, or
+complete small sections of code through autocomplete. Do not ask an agent to
+complete the entire assignment and submit its output. You are responsible for
+every line you submit. Every team member must be able to explain the entire
+submission; the individual exams will test this understanding.
+
+Do not use outside AI assistants to generate or modify the target code. This
+restriction does not apply to the agents you build for this assignment: they
+must modify the workspace copy during the required remediation stage. The
+course's AI-use policy is strictly enforced.
 
 \end{document}
