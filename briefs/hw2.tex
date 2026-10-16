@@ -185,8 +185,8 @@ to the line of the query string. You may add more tools (a line-to-line
 CLDK 2.0.0 (\code{cldk==2.0.0}) needs \code{SYSTEM_PYTHON} set to a Python 3.12
 interpreter; the lecture's notebook attaches with
 \code{CLDK.python(project_path=...,} \code{analysis_level="program_dependency_graph")}. On
-OWASP the first attach analysed 3,710 callables in 151 seconds at that level,
-outside a sandbox, and every later query answers from the cache in under a second.
+OWASP the first attach analysed 3,710 callables at that level in about 150 seconds,
+inside the sandbox and outside it, and later queries answer in well under a second.
 Before trusting an empty entry-point list, read \code{get_entrypoint_coverage}; for
 a local variable use \code{get_ddg}, because the value-name predicates resolve
 parameters, globals and captures, not locals.
@@ -373,9 +373,9 @@ network_policies:
 \caption{\file{examples/policy.example.yaml}, the OpenShell policy for OWASP BenchmarkPython.}\label{fig:policy}
 \end{figure}
 
-Fields and semantics are the OpenShell guide's (COMS E6998-019, \emph{OpenShell:
-Architecture, Enforcement, and Policy}, the course's guide to commit \code{be7af99},
-chapter 10; \url{https://github.com/NVIDIA/OpenShell}): the two lists are
+Fields and semantics are those of OpenShell 0.1.4's policy schema reference,
+\file{docs/how-it-works/policies/schema.mdx} at tag \code{v0.1.4} of
+\url{https://github.com/NVIDIA/OpenShell}: the two lists are
 allow-lists, L7 enforcement defaults to audit unless \code{enforce} is written, and
 authorizing an interpreter authorizes its children. A \code{rest} endpoint must
 carry \code{access} or \code{rules}; OpenShell 0.1.4 rejects it otherwise, and
@@ -657,7 +657,14 @@ The driver starts the server as \code{openshell sandbox exec -n <sandbox>
 the \code{command}, \code{args} and \code{env} of your \code{mcp.json} entry, and
 speaks JSON-RPC over that process's standard input and output. The first byte your
 server writes to standard output must be \verb|{|: a banner or a log line there
-breaks the stream, so log to standard error.
+breaks the stream, so log to standard error. The driver runs the entry as it
+stands in a fresh sandbox, with nothing staged, so the entry names the root your
+server serves, in \code{args} or \code{env} (\file{examples/mcp.example.json} names
+none), and a server that analyses a staged copy (Section~\ref{sec:sandbox}) makes
+it, with its workspace, at startup. A cold CLDK attach takes minutes and the driver bounds the wait for the
+first byte, so answer \code{initialize} at once and build the analysis on the first
+analysis call or in the background. The grading pass calls your analysis tools on a
+server started this way.
 
 Figure~\ref{fig:doors} shows the path a request takes and the three attempts, each
 drawn to the place that stops it: the planted text, which the model may or may not obey, stopped
@@ -873,17 +880,27 @@ Anything else in the README is up to you.
 WSL 2, plus Docker, Podman or host virtualization; Landlock ABI v3 means a kernel of
 6.2 or newer in the sandbox host. Intel Macs and Windows without WSL 2: run Ubuntu
 24.04 in a Linux VM (Multipass or UTM), install Docker and OpenShell inside it as on
-Linux, and ask the instructor for help. Staff used OpenShell 0.1.4, installed with
-the project's \file{install.sh} (read it before you run it):
+Linux, and ask the instructor for help. Staff ran OpenShell 0.1.4 only on macOS on
+Apple Silicon with Colima; the VM recipe, Docker Desktop and the other platforms are
+untested by staff. Install with the project's \file{install.sh} (read it first):
 \par\noindent\url{https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh}\par
-On macOS with Colima, or any engine that runs Docker in a Lima VM, set this key in
-\file{~/.config/openshell/gateway.toml} and restart the gateway
-(\code{brew services restart nvidia/openshell/openshell}) before any sandbox starts;
-without it a create fails with \code{ControlSupervisorStartFailed}:
+On Colima, write this whole file before any sandbox starts and restart the gateway
+as its first line says; it replaces the service's own file. \code{socket_path} is
+what \code{docker context inspect} prints after \code{unix://}.
 \begin{minted}{toml}
+# ~/.config/openshell/gateway.toml, then: brew services restart nvidia/openshell/openshell
+[openshell]
+version = 2
+[openshell.gateway]
+compute_driver = "docker"
 [openshell.drivers.docker]
+socket_path = "/Users/<you>/.colima/default/docker.sock"
 grpc_endpoint = "https://host.docker.internal:17670"
 \end{minted}
+\code{ControlSupervisorStartFailed} at create means \code{grpc_endpoint} is missing;
+without the first three settings the gateway does not start. OpenShell finds Docker
+Desktop's socket; if a create there fails the same way, write the file with that
+socket.
 
 \textbf{The image.} \code{sandbox create --from} takes an image reference, so
 build the image with the gateway's container engine first. The staff image held
@@ -898,8 +915,10 @@ listed path that does not exist in the image is skipped.
 \textbf{The input.} The policy never grants \code{/target} itself, so an agent that
 copies its \code{--input} root cannot be given \code{/target}. Copy the granted
 entries into \code{/sandbox/work/target} and pass that as \code{--input}; the key and
-\code{.git} are never in it. Analyse that copy with CLDK too: CLDK keeps its cache
-in the project directory (\file{.codeanalyzer}), and \code{/target} is read-only.
+\code{.git} are never in it. Analyse that copy with CLDK too: on \code{/target},
+CLDK fails to create its cache (\file{.codeanalyzer}, in the project directory), and
+with the cache moved it finds no callables and raises no error, since it cannot
+list \code{/target}.
 
 \textbf{The model provider.} For Anthropic, import a provider profile (OpenShell's
 \file{providers/anthropic.yaml}) whose top-level \code{binaries} list you have
@@ -915,20 +934,18 @@ Inside the sandbox the variable holds a placeholder, not the key. The attachment
 adds a second network policy, \code{_provider_anthropic}, with the profile's
 endpoint and binaries; your account of the network grant covers both. For an
 OpenAI-compatible model server on your own machine, use
-\file{examples/policy.local.yaml}: a \code{tcp} endpoint, with no \code{enforcement}
-or \code{access} key, on a host name for your machine that is not one of OpenShell's
+\file{examples/policy.local.yaml}: a \code{tcp} endpoint on a host name for your
+machine that is not one of OpenShell's
 reserved aliases (\file{host.docker.internal}, \file{host.containers.internal},
 \file{host.openshell.internal}); an IP literal is rejected. On Colima the name is
 \file{host.lima.internal}.
 
-\textbf{The commands staff ran} with OpenShell 0.1.4 on Apple Silicon under Colima,
-with the OWASP checkout embedded in the image and a model server on the Mac,
-abridged: the run first wrote its config to \file{/sandbox/work/low.toml}, and
-\code{your-agent} stands for the HW1 agent staff ran.
+\textbf{The commands staff ran} on Colima, with the OWASP checkout in the image and a
+model server on the Mac, abridged: the run first wrote its config to
+\file{/sandbox/work/low.toml}, and \code{your-agent} is the HW1 agent.
 \begin{minted}{bash}
 openshell sandbox create --name hw2local --from hw2-feasibility:1 --policy policy.local.yaml \
     --no-auto-providers --detach -- sleep infinity
-openshell sandbox list                     # hw2local ... Ready
 openshell sandbox exec -n hw2local --no-login-shell --no-tty \
     --env LOCAL_MODEL_URL=http://host.lima.internal:8080 -- sh -c '
   mkdir -p /sandbox/work/target &&
