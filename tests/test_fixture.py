@@ -7,6 +7,10 @@ def bandit(checkout):
     files = sorted(str(p.relative_to(checkout)) for p in checkout.glob(SCOPE))
     r = subprocess.run(["uv", "run", "--no-project", "--python", "3.12", "--with", "bandit==1.9.4", "bandit", "-q", "-f", "json", "-ll", *files],
                        cwd=checkout, capture_output=True, text=True)
+    # Bandit exits 0 (clean) or 1 (alerts) and always writes JSON to stdout. Empty or non-JSON stdout means uv could not
+    # supply bandit==1.9.4: the first run needs PyPI, and only a warm uv cache serves it offline. Say so, with uv's own error.
+    assert r.stdout.lstrip().startswith("{"), (
+        f"bandit==1.9.4 did not run (uv exit {r.returncode}); the first run needs network access to PyPI.\n{r.stderr}")
     return json.loads(r.stdout)["results"]
 
 def alerts(checkout):
