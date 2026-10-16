@@ -1,6 +1,7 @@
-import json, pathlib, subprocess, tempfile
+import json, os, pathlib, subprocess, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SRC = pathlib.Path("/Users/rkrsn/COMSE6998-019/HW1-sol/targets/owasp-benchmark-python")
+# A local OWASP BenchmarkPython clone in OWASP_CHECKOUT avoids the network clone; the pinned commit is checked out below.
+SRC = os.environ.get("OWASP_CHECKOUT", "https://github.com/OWASP-Benchmark/BenchmarkPython")
 SCOPE = "testcode/BenchmarkTest000*.py"
 
 def bandit(checkout):

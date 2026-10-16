@@ -1,5 +1,6 @@
 import json, pathlib, tomllib, jsonschema
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# test_hw1_trace_example_still_validates reads HW1's example trace from a clone of hw1-agent-architectures beside this one.
 HW1 = ROOT.parent / "hw1-agent-architectures"
 def schema(name): return json.loads((ROOT / f"{name}.schema.json").read_text())
 def validator(name): return jsonschema.Draft202012Validator(schema(name))
