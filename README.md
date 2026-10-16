@@ -22,7 +22,7 @@ Examples, in `examples/`:
 - `policy.example.yaml`: an OpenShell policy for the Anthropic API.
 - `policy.local.yaml`: the same policy with a `tcp` grant to an OpenAI-compatible model server on your own machine.
 - `report.example.json`: an example `report.json`, 3 of the 18 OWASP rows, showing the format (rationales are placeholders).
-- `trace.example.jsonl`: the example trajectory behind it.
+- `trace.example.jsonl`: an example trajectory on one alert showing `via`, `refused_by` and `discovery`; it is not the run behind `report.example.json`.
 
 Fixtures, in `fixtures/`: `injection.patch` is the planted injection for the live
 runs, and `fixtures/README.md` says how to apply and remove it.
